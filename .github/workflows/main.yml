@@ -1,0 +1,43 @@
+
+name: Build LIFX Chat APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Check Firebase config
+        run: |
+          test -f app/google-services.json || {
+            echo "File app/google-services.json belum ada"
+            exit 1
+          }
+
+      - name: Build debug APK
+        run: |
+          gradle --version
+          gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: LIFX-Chat-debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
