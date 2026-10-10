@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "108975556622",
+    "project_id": "alif-94812",
+    "storage_bucket": "alif-94812.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:108975556622:android:e82cc4c35b4188760e545f",
+        "android_client_info": {
+          "package_name": "com.lifx.chat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDfCDW3vlvddvTNnuQL4Z4aznRVJGcrF18"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
