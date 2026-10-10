@@ -13,8 +13,8 @@ permissions:
 jobs:
   build:
     name: Build Android APK
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
 
     steps:
       - name: Checkout repository
@@ -24,11 +24,10 @@ jobs:
         shell: bash
         run: |
           set -e
-
           PROJECT=""
 
           if [ -f "settings.gradle.kts" ] && [ -f "app/build.gradle.kts" ]; then
-            PROJECT="."
+            PROJECT="$(pwd)"
           else
             ZIP="$(find . -type f -iname '*.zip' \
               -not -path './.git/*' | head -n 1)"
@@ -46,24 +45,26 @@ jobs:
           if [ -z "$PROJECT" ] || \
              [ ! -f "$PROJECT/app/build.gradle.kts" ]; then
             echo "::error::Proyek Android tidak ditemukan."
-            echo "File yang tersedia di repository:"
             find . -maxdepth 4 -type f | head -100
             exit 1
           fi
 
-          echo "PROJECT_DIR=$(realpath "$PROJECT")" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
           echo "Proyek ditemukan: $PROJECT"
 
       - name: Configure Firebase
         shell: bash
         run: |
+          set -e
           DEST="$PROJECT_DIR/app/google-services.json"
 
           if [ -f "$DEST" ]; then
-            echo "Firebase config ditemukan di proyek."
+            echo "Menggunakan konfigurasi Firebase dari proyek."
           elif [ -f "app/google-services.json" ]; then
+            mkdir -p "$PROJECT_DIR/app"
             cp app/google-services.json "$DEST"
           elif [ -f "google-services.json" ]; then
+            mkdir -p "$PROJECT_DIR/app"
             cp google-services.json "$DEST"
           else
             echo "::error::google-services.json tidak ditemukan."
@@ -78,17 +79,56 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '11076708'
+          log-accepted-android-sdk-licenses: false
 
-      - name: Install Gradle
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -e
+          sdkmanager --version
+          sdkmanager "platform-tools" \
+                     "platforms;android-35" \
+                     "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
+      - name: Validate project
+        shell: bash
+        run: |
+          set -e
+          cd "$PROJECT_DIR"
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/google-services.json
+
+          echo "Pemeriksaan proyek berhasil."
+
+      - name: Build debug APK
         shell: bash
         run: |
           cd "$PROJECT_DIR"
           gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK tidak ditemukan."
+            exit 1
+          fi
+
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
