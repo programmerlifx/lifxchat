@@ -31,10 +31,10 @@ jobs:
             exit 1
           }
 
-      - name: Build debug APK
+            - name: Build debug APK
         run: |
-          gradle --version
-          gradle assembleDebug
+          chmod +x gradlew
+          ./gradlew assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
