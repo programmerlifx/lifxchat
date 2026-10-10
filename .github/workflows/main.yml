@@ -20,32 +20,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Locate Android project
+      - name: Locate and extract Android project
         shell: bash
         run: |
           set -e
+          ROOT="$(pwd)"
           PROJECT=""
 
-          if [ -f "settings.gradle.kts" ] && [ -f "app/build.gradle.kts" ]; then
-            PROJECT="$(pwd)"
+          if [ -f "$ROOT/settings.gradle.kts" ] && \
+             [ -f "$ROOT/app/build.gradle.kts" ]; then
+            PROJECT="$ROOT"
           else
-            ZIP="$(find . -type f -iname '*.zip' \
-              -not -path './.git/*' | head -n 1)"
+            ZIP="$(find "$ROOT" -type f -iname '*.zip' \
+              -not -path '*/.git/*' | head -n 1)"
 
-            if [ -n "$ZIP" ]; then
-              mkdir -p "$RUNNER_TEMP/lifx-source"
-              unzip -oq "$ZIP" -d "$RUNNER_TEMP/lifx-source"
-
-              PROJECT="$(find "$RUNNER_TEMP/lifx-source" \
-                -type f -name 'settings.gradle.kts' \
-                -exec dirname {} \; | head -n 1)"
+            if [ -z "$ZIP" ]; then
+              echo "::error::Tidak ada ZIP proyek di repository."
+              find "$ROOT" -maxdepth 3 -type f | head -100
+              exit 1
             fi
+
+            mkdir -p "$RUNNER_TEMP/lifx-source"
+            unzip -oq "$ZIP" -d "$RUNNER_TEMP/lifx-source"
+
+            PROJECT="$(find "$RUNNER_TEMP/lifx-source" \
+              -type f -name 'settings.gradle.kts' \
+              -exec dirname {} \; | head -n 1)"
           fi
 
           if [ -z "$PROJECT" ] || \
              [ ! -f "$PROJECT/app/build.gradle.kts" ]; then
-            echo "::error::Proyek Android tidak ditemukan."
-            find . -maxdepth 4 -type f | head -100
+            echo "::error::Struktur proyek Android tidak valid."
+            find "$RUNNER_TEMP/lifx-source" -maxdepth 4 \
+              -type f 2>/dev/null | head -100
             exit 1
           fi
 
@@ -59,13 +66,13 @@ jobs:
           DEST="$PROJECT_DIR/app/google-services.json"
 
           if [ -f "$DEST" ]; then
-            echo "Firebase config sudah tersedia."
-          elif [ -f "app/google-services.json" ]; then
+            echo "Firebase config ditemukan dalam proyek."
+          elif [ -f "$GITHUB_WORKSPACE/app/google-services.json" ]; then
             mkdir -p "$PROJECT_DIR/app"
-            cp app/google-services.json "$DEST"
-          elif [ -f "google-services.json" ]; then
+            cp "$GITHUB_WORKSPACE/app/google-services.json" "$DEST"
+          elif [ -f "$GITHUB_WORKSPACE/google-services.json" ]; then
             mkdir -p "$PROJECT_DIR/app"
-            cp google-services.json "$DEST"
+            cp "$GITHUB_WORKSPACE/google-services.json" "$DEST"
           else
             echo "::error::google-services.json tidak ditemukan."
             exit 1
@@ -81,35 +88,106 @@ jobs:
         shell: bash
         run: |
           set -e
-
           SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
 
-          if [ ! -x "$SDK/cmdline-tools/latest/bin/sdkmanager" ]; then
-            echo "::error::sdkmanager tidak ditemukan di $SDK."
-            find /usr/local/lib/android/sdk/cmdline-tools \
-              -maxdepth 3 -name sdkmanager 2>/dev/null || true
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null | head -n 1)"
+          fi
+
+          if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager tidak ditemukan."
             exit 1
           fi
 
           echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
-          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
-          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses \
-            >/dev/null || true
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
 
-          "$SDK/cmdline-tools/latest/bin/sdkmanager" \
+          "$SDKMANAGER" \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
 
-      - name: Install Gradle
+      - name: Install Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Validate project
+      - name: Fix Firebase dependencies
+        shell: bash
+        run: |
+          set -e
+          FILE="$PROJECT_DIR/app/build.gradle.kts"
+
+          python3 - "$FILE" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text()
+
+          # Replace Firebase BoM declarations with a valid Kotlin DSL form.
+          text = re.sub(
+              r'implementation\s*\(\s*'
+              r'(?:(?:platform|enforcedPlatform)\s*\(\s*)?'
+              r'"com\.google\.firebase:firebase-bom:[^"]+"'
+              r'\s*\)?\s*\)',
+              'implementation(platform("com.google.firebase:firebase-bom:33.7.0"))',
+              text
+          )
+
+          if "com.google.firebase:firebase-bom" not in text:
+              marker = re.search(r'dependencies\s*\{', text)
+              if not marker:
+                  raise SystemExit("Blok dependencies {} tidak ditemukan.")
+              pos = marker.end()
+              text = (
+                  text[:pos]
+                  + '\n    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))'
+                  + text[pos:]
+              )
+
+          # Ensure Auth and Firestore dependencies have no missing versions
+          # and are managed by the BoM.
+          for artifact in ("firebase-auth", "firebase-firestore"):
+              pattern = (
+                  r'implementation\s*\(\s*'
+                  r'"com\.google\.firebase:' + re.escape(artifact)
+                  + r'(?::[^"]*)?"\s*\)'
+              )
+              replacement = (
+                  'implementation("com.google.firebase:' + artifact + '")'
+              )
+              text = re.sub(pattern, replacement, text)
+
+          if 'implementation("com.google.firebase:firebase-auth")' not in text:
+              text = re.sub(
+                  r'(dependencies\s*\{)',
+                  r'\1\n    implementation("com.google.firebase:firebase-auth")',
+                  text,
+                  count=1
+              )
+
+          if 'implementation("com.google.firebase:firebase-firestore")' not in text:
+              text = re.sub(
+                  r'(dependencies\s*\{)',
+                  r'\1\n    implementation("com.google.firebase:firebase-firestore")',
+                  text,
+                  count=1
+              )
+
+          path.write_text(text)
+          print("Firebase dependency declarations:")
+          for line in text.splitlines():
+              if "firebase-bom" in line or "firebase-auth" in line or "firebase-firestore" in line:
+                  print(line.strip())
+          PY
+
+      - name: Validate project files
         shell: bash
         run: |
           set -e
@@ -121,11 +199,12 @@ jobs:
           test -f app/src/main/AndroidManifest.xml
           test -f app/google-services.json
 
-          echo "Pemeriksaan proyek berhasil."
+          echo "Semua file utama ditemukan."
 
       - name: Build debug APK
         shell: bash
         run: |
+          set -e
           cd "$PROJECT_DIR"
           gradle --no-daemon --stacktrace assembleDebug
 
@@ -135,13 +214,15 @@ jobs:
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$APK" ]; then
-            echo "::error::APK tidak ditemukan."
+            echo "::error::APK tidak ditemukan setelah build."
+            find "$PROJECT_DIR/app/build/outputs" \
+              -type f 2>/dev/null || true
             exit 1
           fi
 
           ls -lh "$APK"
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: LIFX-Chat-debug-APK
